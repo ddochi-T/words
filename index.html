@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Level Up! 영단어 – 통합본</title>
+  <!-- Tailwind Play CDN (간편 배포용) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* 플래시카드 뒤집기 */
+    .flip { perspective: 1200px; }
+    .flip-inner { transition: transform .5s; transform-style: preserve-3d; }
+    .flip.flipped .flip-inner { transform: rotateY(180deg); }
+    .flip-face { backface-visibility: hidden; }
+    .flip-back { transform: rotateY(180deg); }
+  </style>
+  <!-- PapaParse: CSV 파서 -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-blue-100 via-pink-100 to-yellow-100 text-gray-800">
+  <!--
+    📦 깃허브에 그대로 올려 쓰는 통합본 (빌드 불필요)
+    ├─ index.html  ← 이 파일 하나
+    ├─ 3g.csv
+    ├─ 4g.csv
+    ├─ 5g.csv
+    └─ 6g.csv
+    ※ CSV는 세미콜론(;) 구분, 헤더 포함: 단원명;영단어;뜻;예문;해석
+       단원명에서 "Lesson 3" 혹은 "Unit 3"처럼 번호를 인식합니다.
+  -->
+
+  <!-- 루트 -->
+  <div id="app" class="p-6"></div>
+
+  <script>
+  const $ = (sel, el=document) => el.querySelector(sel)
+  const $$ = (sel, el=document) => Array.from(el.querySelectorAll(sel))
+
+  // ===== 오디오 효과 =====
+  function chime(){ try{ const AC=window.AudioContext||window.webkitAudioContext; const ctx=new AC(); const o=ctx.createOscillator(); const g=ctx.createGain(); o.type='sine'; o.connect(g); g.connect(ctx.destination); const t=ctx.currentTime; g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.25,t+0.01); o.frequency.setValueAtTime(1200,t); o.frequency.setValueAtTime(1600,t+0.08); o.frequency.setValueAtTime(2000,t+0.16); g.gain.exponentialRampToValueAtTime(0.0001,t+0.34); o.start(t); o.stop(t+0.36); setTimeout(()=>ctx.close(),500);}catch(e){} }
+  function ding(){ try{ const AC=window.AudioContext||window.webkitAudioContext; const ctx=new AC(); const o=ctx.createOscillator(); const g=ctx.createGain(); o.type='sine'; o.frequency.value=880; o.connect(g); g.connect(ctx.destination); g.gain.setValueAtTime(0.0001,ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.2,ctx.currentTime+0.01); g.gain.exponentialRampToValueAtTime(0.0001,ctx.currentTime+0.25); o.start(); o.stop(ctx.currentTime+0.27); setTimeout(()=>ctx.close(),400);}catch(e){} }
+  function speak(text){ if(!text) return; const u=new SpeechSynthesisUtterance(text); u.lang='en-US'; u.rate=0.95; window.speechSynthesis.cancel(); window.speechSynthesis.speak(u) }
+
+  // ===== 데이터(런타임 로딩) =====
+  const dataset = { '3': {}, '4': {}, '5': {}, '6': {} } // {grade: {unitKey: [words]}}
+  const dicts   = { '3': {}, '4': {}, '5': {}, '6': {} } // {grade: {word: {kr,ex,exKr}}}
+
+  function parseUnitNumber(lesson){
+    if(!lesson) return null
+    const m = String(lesson).match(/(Lesson|Unit)\s*(\d{1,2})/i)
+    return m ? Number(m[2]) : null
+  }
+
+  async function loadCsvForGrade(grade){
+    const url = `./${grade}g.csv`
+    const resp = await fetch(url)
+    if(!resp.ok){ console.warn('CSV 로드 실패', url); return [] }
+    const text = await resp.text()
+    const parsed = Papa.parse(text, { header:true, delimiter:';', skipEmptyLines:true })
+    if(parsed.errors?.length){ console.warn('CSV parse errors', parsed.errors) }
+    return parsed.data || []
+  }
+
+  async function loadAll(){
+    for(const g of ['3','4','5','6']){
+      const rows = await loadCsvForGrade(g)
+      const unitMap = {}
+      rows.forEach(r=>{
+        const w = r['영단어']?.trim()
+        const kr = r['뜻']?.trim()
+        const ex = r['예문']?.trim()
+        const exKr= r['해석']?.trim()
+        const uNum = parseUnitNumber(r['단원명'])
+        if(!w || !kr || !uNum) return
+        const key = String(uNum)
+        unitMap[key] ||= []
+        if(!unitMap[key].includes(w)) unitMap[key].push(w)
+        if(!dicts[g][w]) dicts[g][w] = { kr, ex: ex||`I see a ${w}.`, exKr: exKr||'(해석 준비중)' }
+      })
+      dataset[g] = unitMap
+    }
+  }
+
+  // ===== 상태 =====
+  let state = {
+    loading: true,
+    started: false,
+    mode: 'menu', // 'menu' | 'study' | 'fill' | 'match' | 'quiz'
+    grade: '',    // '3' | '4' | '5' | '6'
+    unit: '',     // '1' | ...
+  }
+
+  function setState(patch){ state = {...state, ...patch}; render() }
+
+  function words(){ const {grade,unit}=state; return (grade && unit) ? (dataset[grade]?.[unit]||[]) : [] }
+  function dict(){ const {grade}=state; return grade? dicts[grade] : {} }
+  function availableUnits(){ const {grade}=state; return grade? Object.keys(dataset[grade]||{}).sort((a,b)=>Number(a)-Number(b)) : [] }
+
+  // ===== UI 빌더 =====
+  function btn(cls, text, on){ const b=document.createElement('button'); b.className=cls; b.textContent=text; if(on) b.onclick=on; return b }
+  function card(cls){ const d=document.createElement('div'); d.className='rounded-2xl bg-white/85 backdrop-blur shadow-lg '+(cls||''); return d }
+
+  function ScreenLoading(){
+    const wrap=document.createElement('div')
+    wrap.className='min-h-screen grid place-items-center p-6'
+    wrap.innerHTML=`<div class="text-center">
+      <div class="text-3xl font-extrabold text-purple-700">데이터 불러오는 중…</div>
+      <div class="text-gray-600 mt-2">3g.csv, 4g.csv, 5g.csv, 6g.csv</div>
+    </div>`
+    return wrap
+  }
+
+  function ScreenStart(){
+    const outer=document.createElement('div')
+    outer.className='flex flex-col items-center justify-center min-h-screen p-6'
+
+    const c=card('w-full max-w-xl')
+    const inner=document.createElement('div'); inner.className='p-6 flex flex-col items-center space-y-6'
+    c.appendChild(inner)
+
+    const h=document.createElement('h1')
+    h.className='text-4xl font-extrabold text-purple-600 drop-shadow-sm text-center'
+    h.textContent='Level Up! 영단어!'
+
+    const p=document.createElement('p')
+    p.className='text-center text-gray-700 text-base'
+    p.innerHTML='학년과 단원을 고르고 <span class="font-semibold text-purple-500">학습 시작</span> 버튼을 눌러주세요.'
+
+    const grid=document.createElement('div')
+    grid.className='w-full grid grid-cols-1 md:grid-cols-2 gap-4'
+
+    // 좌측 폼
+    const form=document.createElement('div'); form.className='space-y-4'
+    const selG=document.createElement('select')
+    selG.className='w-full rounded-xl border border-gray-300 bg-white px-3 py-2 shadow-sm'
+    selG.innerHTML='<option value="" disabled selected>학년 선택</option>\
+      <option value="3">3학년</option>\
+      <option value="4">4학년</option>\
+      <option value="5">5학년</option>\
+      <option value="6">6학년</option>'
+    selG.onchange=(e)=>{ setState({ grade: e.target.value, unit:'' }) }
+
+    const selU=document.createElement('select')
+    selU.className='w-full rounded-xl border border-gray-300 bg-white px-3 py-2 shadow-sm'
+    selU.disabled = !state.grade
+
+    function refreshUnits(){
+      selU.innerHTML='<option value="" disabled selected>단원 선택</option>'
+      if(!state.grade){ selU.disabled=true; return }
+      selU.disabled=false
+      for(const u of availableUnits()){
+        const o=document.createElement('option'); o.value=u; o.textContent=`${u}단원`; selU.appendChild(o)
+      }
+    }
+    refreshUnits()
+    selU.onchange=(e)=> setState({ unit: e.target.value })
+
+    const startBtn = btn('w-full text-lg rounded-xl py-3 bg-purple-500 hover:bg-purple-600 text-white disabled:opacity-60 disabled:cursor-not-allowed', '학습 시작 ✨', ()=>{ setState({started:true, mode:'menu'}) })
+    startBtn.disabled = !(state.grade && state.unit)
+
+    form.append(selG, selU, startBtn)
+
+    // 우측 도움말
+    const help=document.createElement('div')
+    help.className='space-y-3 bg-purple-50/60 border border-purple-200 rounded-2xl p-4'
+    help.innerHTML=`<h3 class="font-bold text-purple-700">사용 설명서</h3>
+      <ul class="text-sm text-gray-700 list-disc pl-5 space-y-1">
+        <li>CSV에서 <b>새로 나온 단어</b>만 자동으로 불러옵니다.</li>
+        <li>메뉴에서 <b>단어 학습 / 단어 맞추기 / 빈 칸 채우기 / 짝 맞추기</b>를 고르세요.</li>
+        <li>플래시카드는 앞면(단어+발음) / 뒷면(뜻+예문/해석)으로 공부해요.</li>
+      </ul>`
+
+    grid.append(form, help)
+    inner.append(h, p, grid)
+    outer.appendChild(c)
+
+    // 버튼 상태 갱신을 위해 Mutation
+    const mo=new MutationObserver(()=>{ startBtn.disabled = !(state.grade && state.unit) })
+    mo.observe(outer,{subtree:true, attributes:true, childList:true})
+
+    return outer
+  }
+
+  function MenuCard({title,subtitle,emoji,onclick,gradient}){
+    const b=document.createElement('button')
+    b.className=`group relative overflow-hidden rounded-2xl shadow-md p-5 text-left text-white bg-gradient-to-br ${gradient}`
+    b.onclick=onclick
+    b.innerHTML=`<div class="absolute -right-6 -top-6 opacity-20 text-6xl">${emoji}</div>
+      <div class="flex items-center gap-3 drop-shadow">"></div>`
+    const row=document.createElement('div'); row.className='flex items-center gap-3 drop-shadow'
+    const icon=document.createElement('div'); icon.textContent=emoji; icon.className='text-2xl'
+    const texts=document.createElement('div')
+    const t=document.createElement('div'); t.className='text-xl font-extrabold'; t.textContent=title
+    const s=document.createElement('div'); s.className='text-sm opacity-90'; s.textContent=subtitle
+    texts.append(t,s)
+    row.append(icon,texts)
+    b.append(row)
+    return b
+  }
+
+  function ScreenMenu(){
+    const outer=document.createElement('div')
+    outer.className='min-h-screen w-full flex items-center justify-center bg-gradient-to-br from-pink-100 via-yellow-100 to-green-100 p-6'
+    const box=document.createElement('div'); box.className='w-full max-w-4xl'
+    const h=document.createElement('h1')
+    h.className='text-3xl md:text-4xl font-extrabold text-purple-700 text-center drop-shadow-sm'
+    h.textContent='무엇을 해볼까요?'
+    const sub=document.createElement('p')
+    sub.className='text-center text-gray-700 mt-2'
+    sub.textContent=`${state.grade}학년 ${state.unit}단원 • 새로 나온 단어`
+
+    const grid=document.createElement('div'); grid.className='grid grid-cols-2 gap-4 mt-8'
+    grid.append(
+      MenuCard({title:'단어 학습', subtitle:'플래시카드로 배워요', emoji:'📖', gradient:'from-purple-400 to-pink-400', onclick:()=>setState({mode:'study'})}),
+      MenuCard({title:'단어 맞추기', subtitle:'뜻을 고르기', emoji:'🧠', gradient:'from-sky-300 to-blue-400', onclick:()=>setState({mode:'quiz'})}),
+      MenuCard({title:'빈 칸 채우기', subtitle:'글자 빠진 단어 맞히기', emoji:'✏️', gradient:'from-amber-300 to-orange-400', onclick:()=>setState({mode:'fill'})}),
+      MenuCard({title:'짝 맞추기', subtitle:'단어-뜻 짝 맞추기', emoji:'🃏', gradient:'from-teal-300 to-emerald-400', onclick:()=>setState({mode:'match'})}),
+    )
+
+    const back=document.createElement('div'); back.className='flex justify-center mt-8'
+    back.append( btn('bg-white text-gray-800 border border-gray-200 rounded-xl px-4 py-2 hover:bg-gray-50', '학년/단원 바꾸기', ()=>setState({started:false, mode:'menu'})) )
+
+    box.append(h, sub, grid, back)
+    outer.append(box)
+    return outer
+  }
+
+  // ===== 플래시카드 =====
+  function ScreenStudy(){
+    const list = words(); const d=dict()
+    if(!list.length){ return emptyScreen('단어 학습 · 플래시카드', '학습할 단어가 없습니다.') }
+
+    let idx=0, flipped=false
+    const outer=document.createElement('div')
+    outer.className='flex flex-col items-center min-h-screen bg-gradient-to-br from-purple-100 via-pink-100 to-yellow-100 p-6'
+
+    const h=document.createElement('h2'); h.className='text-2xl md:text-3xl font-extrabold text-purple-700'; h.textContent='단어 학습 · 플래시카드'
+    const sub=document.createElement('p'); sub.className='text-gray-700 mt-1'; sub.textContent=titleText(idx)
+
+    const holder=document.createElement('div'); holder.className='mt-6 w-full max-w-md'
+    const flip=document.createElement('div'); flip.className='relative h-64 flip rounded-2xl'
+    const flipInner=document.createElement('div'); flipInner.className='flip-inner absolute inset-0 rounded-2xl shadow-lg cursor-pointer'
+
+    const front=document.createElement('div'); front.className='flip-face absolute inset-0 bg-white/95 rounded-2xl flex flex-col items-center justify-center gap-4 border border-purple-200'
+    const wordEl=document.createElement('div'); wordEl.className='text-3xl md:text-4xl font-extrabold text-purple-700 drop-shadow-sm'
+    const speakBtn=btn('bg-purple-500 hover:bg-purple-600 text-white rounded-xl px-4 py-2','발음 듣기', (e)=>{ e.stopPropagation(); speak(list[idx]) })
+    const hint=document.createElement('p'); hint.className='text-xs text-gray-500'; hint.textContent='(카드를 탭하면 뒷면이 보여요)'
+    front.append(wordEl, speakBtn, hint)
+
+    const back=document.createElement('div'); back.className='flip-face flip-back absolute inset-0 bg-purple-50 rounded-2xl flex flex-col items-center justify-center gap-2 border border-purple-200 p-4 text-center'
+    const meaning=document.createElement('div'); meaning.className='text-lg md:text-xl font-bold text-purple-700'
+    const ex=document.createElement('div'); ex.className='text-gray-700'
+    const exk=document.createElement('div'); exk.className='text-gray-700'
+    const hint2=document.createElement('p'); hint2.className='text-xs text-gray-500'; hint2.textContent='(다시 탭하면 앞면으로)'
+    back.append(meaning, ex, exk, hint2)
+
+    flipInner.append(front, back)
+    flip.append(flipInner)
+    holder.append(flip)
+
+    function syncCard(){ const w=list[idx]; const info=d[w]||{kr:'뜻 준비중', ex:`I see a ${w}.`, exKr:'(해석 준비중)'}; wordEl.textContent=w; meaning.innerHTML=`뜻: <span class="font-extrabold">${info.kr}</span>`; ex.innerHTML=`예문: <span class="font-medium">${info.ex||''}</span>`; exk.innerHTML=`해석: <span class="font-medium">${info.exKr||'(해석 준비중)'} </span>`; sub.textContent=titleText(idx) }
+
+    flip.addEventListener('click',()=>{ flipped=!flipped; flip.classList.toggle('flipped', flipped) })
+
+    const nav=document.createElement('div'); nav.className='mt-6 flex items-center gap-2'
+    const prev=btn('bg-white text-gray-800 border border-gray-200 rounded-xl px-4 py-2','이전',()=>{ flipped=false; flip.classList.remove('flipped'); idx=(idx-1+list.length)%list.length; syncCard() })
+    const shuffle=btn('bg-transparent border border-transparent text-gray-700 rounded-xl px-4 py-2 hover:bg-gray-100','섞기',()=>{ flipped=false; flip.classList.remove('flipped'); idx=Math.floor(Math.random()*list.length); syncCard() })
+    const next=btn('bg-purple-500 hover:bg-purple-600 text-white rounded-xl px-4 py-2','다음',()=>{ flipped=false; flip.classList.remove('flipped'); idx=(idx+1)%list.length; syncCard() })
+    nav.append(prev, shuffle, next)
+
+    const backBtnWrap=document.createElement('div'); backBtnWrap.className='flex gap-2 mt-6'
+    backBtnWrap.append( btn('bg-white text-gray-800 border border-gray-200 rounded-xl px-4 py-2 hover:bg-gray-50','메뉴로',()=>setState({mode:'menu'})) )
+
+    outer.append(h, sub, holder, nav, backBtnWrap)
+    syncCard()
+    return outer
+
+    function titleText(i){ return `${state.grade}학년 ${state.unit}단원 · ${list.length? i+1:0}/${list.length}` }
+  }
+
+  // ===== 빈 칸 채우기 =====
+  function ScreenFill(){
+    const list=words(); const d=dict();
+    if(!list.length){ return emptyScreen('빈 칸 채우기','학습할 단어가 없습니다.') }
+
+    // 5문항 뽑기
+    const pool=[...list]; for(let i=pool.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [pool[i],pool[j]]=[pool[j],pool[i]] }
+    const questions=pool.slice(0, Math.min(5,pool.length))
+
+    let qIndex=0, blankIdx=[], stage=0, filled={}, choices=[], feedback=null
+
+    const outer=document.createElement('div'); outer.className='flex flex-col items-center min-h-screen bg-gradient-to-br from-amber-100 via-orange-100 to-red-100 p-6'
+    const h=document.createElement('h2'); h.className='text-2xl md:text-3xl font-extrabold text-amber-700'; h.textContent='빈 칸 채우기'
+    const sub=document.createElement('p'); sub.className='text-gray-700 mt-1'; sub.textContent=titleText()
+
+    const card=card('w-full max-w-2xl bg-white/95 p-6 rounded-2xl shadow-md')
+    const stemWrap=document.createElement('div'); stemWrap.className='text-center'
+    const stem=document.createElement('div'); stem.className='text-3xl md:text-4xl font-extrabold tracking-wider text-amber-700'
+    stemWrap.append(stem)
+
+    const infoRow=document.createElement('div'); infoRow.className='mt-5 grid grid-cols-1 md:grid-cols-3 gap-3'
+    const meaningBox=document.createElement('div'); meaningBox.className='md:col-span-2 rounded-xl bg-amber-50 border border-amber-200 p-4 text-amber-800'
+    meaningBox.innerHTML='<div class="font-bold">뜻</div><div class="meaning-text"></div>'
+    const meaningText=$('.meaning-text', meaningBox)
+    const speakBox=document.createElement('div'); speakBox.className='flex md:justify-end items-start'
+    speakBox.append( btn('bg-amber-500 hover:bg-amber-600 text-white rounded-xl px-4 py-2', '발음 듣기', ()=>speak(current())) )
+
+    infoRow.append(meaningBox, speakBox)
+
+    const choiceWrap=document.createElement('div'); choiceWrap.className='mt-5'
+    const guide=document.createElement('div'); guide.className='text-sm text-gray-600 mb-2'
+    const grid=document.createElement('div'); grid.className='grid grid-cols-5 gap-2'
+
+    const fb=document.createElement('div')
+
+    const nextWrap=document.createElement('div'); nextWrap.className='mt-6 flex justify-center'
+    const nextBtn=btn('bg-purple-500 hover:bg-purple-600 text-white rounded-xl px-4 py-2','다음 문항', nextQuestion)
+
+    choiceWrap.append(guide, grid, fb)
+    card.append(stemWrap, infoRow, choiceWrap, nextWrap)
+
+    const backWrap=document.createElement('div'); backWrap.className='flex gap-2 mt-6'
+    backWrap.append( btn('bg-white text-gray-800 border border-gray-200 rounded-xl px-4 py-2 hover:bg-gray-50','메뉴로',()=>setState({mode:'menu'})) )
+
+    outer.append(h, sub, card, backWrap)
+
+    setupQuestion()
+    return outer
+
+    function titleText(){ return `${state.grade}학년 ${state.unit}단원 · 문항 ${qIndex+1}/${questions.length}` }
+    function current(){ return questions[qIndex] || '' }
+    function pickBlankIndices(w){ const letters=[]; for(let i=0;i<w.length;i++) if(/[A-Za-z]/.test(w[i])) letters.push(i); if(!letters.length) return []; const pick=a=>a[Math.floor(Math.random()*a.length)]; const i1=pick(letters); let i2=i1; if(letters.length>1){ do{i2=pick(letters)} while(i2===i1) } return [Math.min(i1,i2), Math.max(i1,i2)] }
+    function makeChoices(ch){ const alphabet='abcdefghijklmnopqrstuvwxyz'.split(''); const correct=ch.toLowerCase(); const pool=alphabet.filter(c=>c!==correct); for(let i=pool.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [pool[i],pool[j]]=[pool[j],pool[i]] } const picks=pool.slice(0,4); const all=[correct,...picks]; for(let i=all.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [all[i],all[j]]=[all[j],all[i]] } return all.map(c=>c.toUpperCase()) }
+
+    function setupQuestion(){ const w=current(); const info=d[w]||{kr:'뜻 준비중', ex:`I see a ${w}.`}; sub.textContent=titleText(); blankIdx=pickBlankIndices(w); stage=0; filled={}; feedback=null; grid.innerHTML=''; fb.className='mt-3'; fb.textContent=''; guide.textContent= stage===0? '첫 번째 빈칸을 고르세요' : '두 번째 빈칸을 고르세요'; meaningText.textContent=info.kr; const mk = ()=>{ const chars=w.split(''); if(blankIdx.length===2){ const [b0,b1]=blankIdx; chars[b0]=filled[b0]??'_'; chars[b1]=filled[b1]??'_'; } return chars.join('') }; stem.textContent=mk(); if(blankIdx.length===2){ choices=makeChoices(w[blankIdx[0]]); } else { choices=[] } renderChoices() }
+
+    function renderChoices(){ grid.innerHTML=''; choices.forEach(c=>{ const b=btn('rounded-xl border border-amber-200 py-3 font-extrabold text-lg hover:-translate-y-0.5 hover:shadow-md hover:bg-amber-50 active:scale-[0.98] transition', c, ()=>handleChoice(c)); grid.append(b) }) }
+
+    function handleChoice(c){ const w=current(); if(!w||blankIdx.length!==2) return; const [b0,b1]=blankIdx; const target = stage===0? b0 : b1; const correct = w[target].toLowerCase(); if(c.toLowerCase()===correct){ filled[target]=w[target]; ding(); fb.className='mt-3 text-green-600 font-bold'; fb.textContent='좋아요! 정답입니다.'; if(stage===0){ stage=1; choices=makeChoices(w[b1]); setTimeout(()=>{ fb.textContent=''; renderChoices() }, 250) } else { setTimeout(()=>{ fb.textContent='' }, 300) } const chars=w.split(''); chars[b0]=filled[b0]??'_'; chars[b1]=filled[b1]??'_'; stem.textContent=chars.join('') } else { fb.className='mt-3 text-red-600 font-bold'; fb.textContent='앗! 다시 생각해 보세요.'; setTimeout(()=>{ fb.textContent='' }, 400) } updateNextBtn() }
+
+    function updateNextBtn(){ const complete = blankIdx.length===2 && filled[blankIdx[0]] && filled[blankIdx[1]]; nextBtn.textContent = (qIndex+1<questions.length)? '다음 문항' : '완료 (메뉴로)'; nextBtn.disabled = !complete; nextBtn.className = 'bg-purple-500 hover:bg-purple-600 text-white rounded-xl px-4 py-2'+(complete?'' :' opacity-60 cursor-not-allowed') }
+
+    function nextQuestion(){ if(qIndex+1<questions.length){ qIndex++; setupQuestion(); updateNextBtn(); } else { setState({mode:'menu'}) } }
+
+    updateNextBtn()
+  }
+
+  // ===== 단어 뜻 맞추기 =====
+  function ScreenQuiz(){
+    const list=words(); const d=dict();
+    if(!list.length){ return emptyScreen('단어 맞추기','학습할 단어가 없습니다.') }
+
+    const pool=[...list]; for(let i=pool.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [pool[i],pool[j]]=[pool[j],pool[i]] }
+    const questions=pool.slice(0, Math.min(5,pool.length))
+
+    let qIndex=0, selected=null, correct=null, finished=false
+
+    const outer=document.createElement('div'); outer.className='flex flex-col items-center min-h-screen bg-gradient-to-br from-indigo-100 via-blue-100 to-sky-100 p-6'
+    const h=document.createElement('h2'); h.className='text-2xl md:text-3xl font-extrabold text-indigo-700'; h.textContent='단어 맞추기'
+    const sub=document.createElement('p'); sub.className='text-gray-700 mt-1'; sub.textContent=titleText()
+
+    const card=card('w-full max-w-2xl bg-white/95 p-6 rounded-2xl shadow-md')
+    const head=document.createElement('div'); head.className='text-center'
+    const wordEl=document.createElement('div'); wordEl.className='text-3xl md:text-4xl font-extrabold text-indigo-700'
+    const instr=document.createElement('div'); instr.className='mt-1 text-sm text-gray-500'; instr.textContent='뜻을 고르세요'
+    head.append(wordEl, instr)
+
+    const grid=document.createElement('div'); grid.className='mt-5 grid grid-cols-1 md:grid-cols-2 gap-3'
+
+    const actions=document.createElement('div'); actions.className='mt-6 flex justify-center gap-2'
+    const nextBtn=btn('bg-purple-500 hover:bg-purple-600 text-white rounded-xl px-4 py-2','다음 문제',()=>{ if(qIndex+1<questions.length){ qIndex++; setupQ(); } else { finished=true; showDone() } })
+    const backBtn=btn('bg-white text-gray-800 border border-gray-200 rounded-xl px-4 py-2 hover:bg-gray-50','메뉴로',()=>setState({mode:'menu'}))
+    actions.append(nextBtn, backBtn)
+
+    card.append(head, grid, actions)
+    outer.append(h, sub, card)
+
+    const overlay=document.createElement('div'); overlay.className='fixed inset-0 hidden bg-black/30 backdrop-blur-sm items-center justify-center'
+    overlay.innerHTML=`<div class="bg-white rounded-2xl p-6 max-w-sm w-full text-center shadow-xl">
+      <div class="text-2xl font-extrabold text-indigo-700">모두 풀었어요! 🎉</div>
+      <div class="mt-2 text-gray-700">한 번 더 도전하거나 메뉴로 돌아가세요.</div>
+      <div class="mt-4 flex gap-2 justify-center">
+        <button class="again bg-purple-500 hover:bg-purple-600 text-white rounded-xl px-4 py-2">한 번 더</button>
+        <button class="menu bg-white text-gray-800 border border-gray-200 rounded-xl px-4 py-2 hover:bg-gray-50">메뉴로 돌아가기</button>
+      </div>
+    </div>`
+    document.body.appendChild(overlay)
+    overlay.querySelector('.again').onclick=()=>{ qIndex=0; finished=false; setupQ(); overlay.classList.add('hidden') }
+    overlay.querySelector('.menu').onclick=()=>{ overlay.classList.add('hidden'); setState({mode:'menu'}) }
+
+    setupQ()
+    return outer
+
+    function titleText(){ return `${state.grade}학년 ${state.unit}단원 · 문항 ${qIndex+1}/${questions.length}` }
+
+    function setupQ(){ selected=null; correct=null; sub.textContent=titleText(); const w=questions[qIndex]; wordEl.textContent=w; const correctMeaning=d[w]?.kr || '(뜻 준비중)'; const others=list.filter(x=>x!==w); for(let i=others.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [others[i],others[j]]=[others[j],others[i]] } const distractors=[]; for(const x of others){ const m=d[x]?.kr; if(m && m!==correctMeaning && !distractors.includes(m)) distractors.push(m); if(distractors.length>=3) break } const options=[correctMeaning, ...distractors.slice(0,3)]; while(options.length<4) options.push('(보기 준비중)'); for(let i=options.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [options[i],options[j]]=[options[j],options[i]] } grid.innerHTML=''; options.forEach(opt=>{ const b=btn('rounded-xl border px-4 py-3 text-left font-semibold transition hover:-translate-y-0.5 hover:shadow-md hover:bg-indigo-50 border-indigo-200', opt, ()=>choose(opt, correctMeaning)); grid.append(b) }); nextBtn.disabled=true; nextBtn.classList.add('opacity-60','cursor-not-allowed') }
+
+    function choose(choice, correctMeaning){ if(correct!==null) return; selected=choice; const ok = (choice===correctMeaning); correct=ok; if(ok){ chime(); } // 스타일 반영
+      $$('.'+'' ,grid); // no-op just keep structure
+      Array.from(grid.children).forEach(btnEl=>{ const t=btnEl.textContent; if(t===correctMeaning){ btnEl.classList.add('bg-green-50','border-green-300','text-green-700') } else if(t===choice){ btnEl.classList.add('bg-red-50','border-red-300','text-red-700') } })
+      if(!ok){ const warn=document.createElement('div'); warn.className='mt-3 text-red-600 font-bold'; warn.textContent='다시 생각해 보세요.'; card.appendChild(warn); setTimeout(()=>warn.remove(), 700) }
+      nextBtn.disabled=false; nextBtn.classList.remove('opacity-60','cursor-not-allowed') }
+
+    function showDone(){ overlay.classList.remove('hidden'); }
+  }
+
+  // ===== 짝 맞추기 =====
+  function ScreenMatch(){
+    const list=words(); const d=dict();
+    if(!list.length || list.length<4){ return emptyScreen('짝 맞추기','단어가 부족해요 (4개 이상 필요)') }
+
+    const pool=[...list]; for(let i=pool.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [pool[i],pool[j]]=[pool[j],pool[i]] }
+    const selected=pool.slice(0,4)
+
+    const deck=[]; selected.forEach((w,idx)=>{ deck.push({id:`${w}-${idx}-en`, key:w, kind:'en', label:w}); deck.push({id:`${w}-${idx}-kr`, key:w, kind:'kr', label:d[w]?.kr || '(뜻 준비중)'}) })
+    for(let i=deck.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [deck[i],deck[j]]=[deck[j],deck[i]] }
+
+    let flipped=[], matched=new Set(), lock=false, moves=0
+
+    const outer=document.createElement('div'); outer.className='flex flex-col items-center min-h-screen bg-gradient-to-br from-teal-100 via-emerald-100 to-green-100 p-6'
+    const h=document.createElement('h2'); h.className='text-2xl md:text-3xl font-extrabold text-emerald-700'; h.textContent='짝 맞추기'
+    const sub=document.createElement('p'); sub.className='text-gray-700 mt-1'; sub.textContent=status()
+
+    const grid=document.createElement('div'); grid.className='mt-5 w-full max-w-3xl grid grid-cols-2 sm:grid-cols-4 gap-3 md:gap-4'
+
+    deck.forEach(card=>{
+      const b=document.createElement('button')
+      b.className='relative h-24 md:h-28 rounded-xl border shadow-sm bg-white/95 border-emerald-200 transition-transform active:scale-[0.98]'
+      b.dataset.id=card.id
+      b.onclick=()=>onClick(card.id)
+      b.innerHTML='<div class="h-full w-full flex items-center justify-center text-emerald-700/70 text-2xl md:text-3xl font-extrabold">?</div>'
+      grid.append(b)
+    })
+
+    const actions=document.createElement('div'); actions.className='mt-6 flex gap-2'
+    const reshuffle=btn('bg-purple-500 hover:bg-purple-600 text-white rounded-xl px-4 py-2','다시 섞기',()=>{ setState({mode:'match'}) })
+    const back=btn('bg-white text-gray-800 border border-gray-200 rounded-xl px-4 py-2 hover:bg-gray-50','메뉴로',()=>setState({mode:'menu'}) )
+    actions.append(reshuffle, back)
+
+    outer.append(h, sub, grid, actions)
+
+    function onClick(id){ if(lock) return; if(matched.has(id)) return; if(flipped.includes(id)) return; flipped=[...flipped, id]; reveal(id, true); if(flipped.length===2){ lock=true; moves++; const [a,b]=flipped; const ca=deck.find(c=>c.id===a), cb=deck.find(c=>c.id===b); if(ca&&cb&&ca.key===cb.key&&ca.kind!==cb.kind){ chime(); setTimeout(()=>{ matched.add(a); matched.add(b); flipped=[]; lock=false; sub.textContent=status(); if(matched.size===deck.length){ const done=document.createElement('div'); done.className='mt-4 rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-emerald-700 font-bold'; done.textContent='모두 맞췄어요! 🥳 다시 해볼까요?'; outer.insertBefore(done, grid) } }, 350) } else { setTimeout(()=>{ reveal(a,false); reveal(b,false); flipped=[]; lock=false; sub.textContent=status() }, 800) } } }
+
+    function reveal(id, show){ const btnEl = grid.querySelector(`[data-id="${id}"]`); const card = deck.find(c=>c.id===id); if(!btnEl||!card) return; if(show||matched.has(id)){ btnEl.className='relative h-24 md:h-28 rounded-xl border shadow-sm bg-emerald-50 border-emerald-300'; btnEl.innerHTML=`<div class="h-full w-full flex items-center justify-center"><div class="font-extrabold text-emerald-700 text-base md:text-lg text-center px-2 break-words leading-tight">${card.label}</div></div>` } else { btnEl.className='relative h-24 md:h-28 rounded-xl border shadow-sm bg-white/95 border-emerald-200 transition-transform active:scale-[0.98]'; btnEl.innerHTML='<div class="h-full w-full flex items-center justify-center text-emerald-700/70 text-2xl md:text-3xl font-extrabold">?</div>' } }
+
+    function status(){ return `${state.grade}학년 ${state.unit}단원 · 맞춘 쌍 ${matched.size/2}/${deck.length/2} · 시도 ${moves}` }
+
+    return outer
+  }
+
+  // ===== 공통 빈 화면 =====
+  function emptyScreen(title, msg){ const outer=document.createElement('div'); outer.className='flex flex-col items-center min-h-screen p-6'; const h=document.createElement('h2'); h.className='text-2xl md:text-3xl font-extrabold text-gray-700'; h.textContent=title; const p=document.createElement('p'); p.className='text-gray-700 mt-1'; p.textContent=`${state.grade}학년 ${state.unit}단원 · ${msg}`; const back=btn('mt-6 bg-white text-gray-800 border border-gray-200 rounded-xl px-4 py-2 hover:bg-gray-50','메뉴로',()=>{ state.started? setState({mode:'menu'}) : render() }); outer.append(h,p,back); return outer }
+
+  // ===== 라우팅 렌더 =====
+  async function render(){
+    const root = document.getElementById('app')
+    root.innerHTML=''
+    if(state.loading){ root.appendChild(ScreenLoading()); return }
+    if(!state.started){ root.appendChild(ScreenStart()); return }
+    if(state.mode==='menu'){ root.appendChild(ScreenMenu()); return }
+    if(state.mode==='study'){ root.appendChild(ScreenStudy()); return }
+    if(state.mode==='fill'){ root.appendChild(ScreenFill()); return }
+    if(state.mode==='quiz'){ root.appendChild(ScreenQuiz()); return }
+    if(state.mode==='match'){ root.appendChild(ScreenMatch()); return }
+  }
+
+  (async function init(){ await loadAll(); setState({loading:false}) })()
+  </script>
+</body>
+</html>
