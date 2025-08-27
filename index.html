@@ -354,6 +354,8 @@ function fanfare(){
   const nextWrap=document.createElement('div'); nextWrap.className='mt-10 flex justify-center';
   const nextBtn=btn('bg-purple-500 hover:bg-purple-600 text-white rounded-xl px-6 py-3 text-lg','다음 문항', nextQuestion);
 
+  nextWrap.append(nextBtn);
+
   choiceWrap.append(guide, grid, fb);
   panel.append(stemWrap, infoRow, choiceWrap, nextWrap);
 
