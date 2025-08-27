@@ -337,101 +337,131 @@
   }
 
   // ===== 단어 뜻 맞추기 =====
-  function ScreenQuiz(){
-    const list=words(); const d=dict();
-    if(!list.length){ return emptyScreen('단어 맞추기','학습할 단어가 없습니다.') }
+ function ScreenQuiz(){
+  const list=words(); const d=dict();
+  if(!list.length){ return emptyScreen('단어 맞추기','학습할 단어가 없습니다.') }
 
-    const pool=[...list]; for(let i=pool.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [pool[i],pool[j]]=[pool[j],pool[i]] }
-    const questions=pool.slice(0, Math.min(5,pool.length))
+  const pool=[...list]; for(let i=pool.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [pool[i],pool[j]]=[pool[j],pool[i]] }
+  const questions=pool.slice(0, Math.min(5,pool.length))
 
-    let qIndex=0, selected=null, correct=null, finished=false
+  let qIndex=0, selected=null, correct=null, finished=false, score=0; // ← 점수 집계 추가
 
-    const outer=document.createElement('div'); outer.className='flex flex-col items-center min-h-screen bg-gradient-to-br from-indigo-100 via-blue-100 to-sky-100 p-6'
-    const h=document.createElement('h2'); h.className='text-2xl md:text-3xl font-extrabold text-indigo-700'; h.textContent='단어 맞추기'
-    const sub=document.createElement('p'); sub.className='text-gray-700 mt-1'; sub.textContent=titleText()
+  // ── 여백 넉넉히
+  const outer=document.createElement('div'); 
+  outer.className='flex flex-col items-center min-h-screen bg-gradient-to-br from-indigo-100 via-blue-100 to-sky-100 px-6 py-10';
 
-    const panel=card('w-full max-w-2xl bg-white/95 p-6 rounded-2xl shadow-md') /* 이름 충돌 수정 */
-    const head=document.createElement('div'); head.className='text-center'
-    const wordEl=document.createElement('div'); wordEl.className='text-3xl md:text-4xl font-extrabold text-indigo-700'
-    const instr=document.createElement('div'); instr.className='mt-1 text-sm text-gray-500'; instr.textContent='뜻을 고르세요'
-    head.append(wordEl, instr)
+  const h=document.createElement('h2'); 
+  h.className='text-3xl md:text-4xl font-extrabold text-indigo-700 tracking-tight';
+  h.textContent='단어 맞추기';
 
-    const grid=document.createElement('div'); grid.className='mt-5 grid grid-cols-1 md:grid-cols-2 gap-3'
+  const sub=document.createElement('p'); 
+  sub.className='text-gray-700 mt-2 mb-8 md:mb-10';
+  sub.textContent=titleText();
 
-    const actions=document.createElement('div'); actions.className='mt-6 flex justify-center gap-2'
-    const nextBtn=btn('bg-purple-500 hover:bg-purple-600 text-white rounded-xl px-4 py-2','다음 문제',()=>{ if(qIndex+1<questions.length){ qIndex++; setupQ(); } else { finished=true; showDone() } })
-    const backBtn=btn('bg-white text-gray-800 border border-gray-200 rounded-xl px-4 py-2 hover:bg-gray-50','메뉴로',()=>setState({mode:'menu'}))
-    actions.append(nextBtn, backBtn)
+  // ── 패널(카드)
+  const panel=card('w-full max-w-4xl bg-white/95 p-8 md:p-10 rounded-3xl shadow-lg'); 
+  const head=document.createElement('div'); head.className='text-center';
+  const wordEl=document.createElement('div'); 
+  wordEl.className='text-4xl md:text-5xl font-extrabold text-indigo-700';
+  const instr=document.createElement('div'); 
+  instr.className='mt-3 text-base md:text-lg text-gray-500'; 
+  instr.textContent='뜻을 고르세요';
+  head.append(wordEl, instr);
 
-    panel.append(head, grid, actions)
-    outer.append(h, sub, panel)
+  // ── 보기(여백 넉넉히)
+  const grid=document.createElement('div'); 
+  grid.className='mt-8 md:mt-10 grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5';
 
-    const overlay=document.createElement('div'); overlay.className='fixed inset-0 hidden bg-black/30 backdrop-blur-sm items-center justify-center'
-    overlay.innerHTML=`<div class="bg-white rounded-2xl p-6 max-w-sm w-full text-center shadow-xl">
+  // ── 하단 액션
+  const actions=document.createElement('div'); actions.className='mt-10 flex justify-center gap-3';
+  const nextBtn=btn('bg-purple-500 hover:bg-purple-600 text-white rounded-xl px-6 py-3 text-lg','다음 문제',()=>{
+    if(qIndex+1<questions.length){ qIndex++; setupQ(); }
+    else { finished=true; showDone(); }
+  });
+  const backBtn=btn('bg-white text-gray-800 border border-gray-200 rounded-xl px-6 py-3','메뉴로',()=>setState({mode:'menu'}));
+  actions.append(nextBtn, backBtn);
+
+  panel.append(head, grid, actions);
+  outer.append(h, sub, panel);
+
+  // ── 결과 팝업: 화면 한가운데 고정 + 점수 표시
+  const overlay=document.createElement('div'); 
+  overlay.className='fixed inset-0 hidden flex items-center justify-center bg-black/30 backdrop-blur-sm z-50';
+  overlay.innerHTML=`<div class="bg-white rounded-2xl p-8 md:p-9 max-w-sm w-[92%] text-center shadow-2xl">
       <div class="text-2xl font-extrabold text-indigo-700">모두 풀었어요! 🎉</div>
-      <div class="mt-2 text-gray-700">한 번 더 도전하거나 메뉴로 돌아가세요.</div>
-      <div class="mt-4 flex gap-2 justify-center">
-        <button class="again bg-purple-500 hover:bg-purple-600 text-white rounded-xl px-4 py-2">한 번 더</button>
-        <button class="menu bg-white text-gray-800 border border-gray-200 rounded-xl px-4 py-2 hover:bg-gray-50">메뉴로 돌아가기</button>
+      <div class="mt-2 text-gray-700 result">정답: 0/0</div>
+      <div class="mt-5 flex gap-2 justify-center">
+        <button class="again bg-purple-500 hover:bg-purple-600 text-white rounded-xl px-5 py-2.5">한 번 더</button>
+        <button class="menu bg-white text-gray-800 border border-gray-200 rounded-xl px-5 py-2.5 hover:bg-gray-50">메뉴로</button>
       </div>
-    </div>`
-    document.body.appendChild(overlay)
-    overlay.querySelector('.again').onclick=()=>{ qIndex=0; finished=false; setupQ(); overlay.classList.add('hidden') }
-    overlay.querySelector('.menu').onclick=()=>{ overlay.classList.add('hidden'); setState({mode:'menu'}) }
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('.again').onclick=()=>{ qIndex=0; score=0; finished=false; setupQ(); overlay.classList.add('hidden') }
+  overlay.querySelector('.menu').onclick=()=>{ overlay.classList.add('hidden'); setState({mode:'menu'}) }
 
-    setupQ()
-    return outer
+  setupQ();
+  return outer;
 
-    function titleText(){ return `${state.grade}학년 ${state.unit}단원 · 문항 ${qIndex+1}/${questions.length}` }
+  function titleText(){ return `${state.grade}학년 ${state.unit}단원 · 문항 ${qIndex+1}/${questions.length}` }
 
-    function setupQ(){
-      selected=null; correct=null;
-      sub.textContent=titleText();
-      const w=questions[qIndex];
-      wordEl.textContent=w;
+  function setupQ(){
+    selected=null; correct=null;
+    sub.textContent=titleText();
+    const w=questions[qIndex];
+    wordEl.textContent=w;
 
-      const correctMeaning=d[w]?.kr || '(뜻 준비중)';
-      const others=list.filter(x=>x!==w);
-      for(let i=others.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [others[i],others[j]]=[others[j],others[i]] }
-      const distractors=[];
-      for(const x of others){
-        const m=d[x]?.kr;
-        if(m && m!==correctMeaning && !distractors.includes(m)) distractors.push(m);
-        if(distractors.length>=3) break;
-      }
-      const options=[correctMeaning, ...distractors.slice(0,3)];
-      while(options.length<4) options.push('(보기 준비중)');
-      for(let i=options.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [options[i],options[j]]=[options[j],options[i]] }
-
-      grid.innerHTML='';
-      options.forEach(opt=>{
-        const b=btn('rounded-xl border px-4 py-3 text-left font-semibold transition hover:-translate-y-0.5 hover:shadow-md hover:bg-indigo-50 border-indigo-200', opt, ()=>choose(opt, correctMeaning));
-        grid.append(b)
-      });
-
-      nextBtn.disabled=true; nextBtn.classList.add('opacity-60','cursor-not-allowed')
+    const correctMeaning=d[w]?.kr || '(뜻 준비중)';
+    const others=list.filter(x=>x!==w);
+    for(let i=others.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [others[i],others[j]]=[others[j],others[i]] }
+    const distractors=[];
+    for(const x of others){
+      const m=d[x]?.kr;
+      if(m && m!==correctMeaning && !distractors.includes(m)) distractors.push(m);
+      if(distractors.length>=3) break;
     }
+    const options=[correctMeaning, ...distractors.slice(0,3)];
+    while(options.length<4) options.push('(보기 준비중)');
+    for(let i=options.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [options[i],options[j]]=[options[j],options[i]] }
 
-    function choose(choice, correctMeaning){
-      if(correct!==null) return;
-      selected=choice;
-      const ok = (choice===correctMeaning);
-      correct=ok;
-      if(ok){ chime(); }
-      Array.from(grid.children).forEach(btnEl=>{
-        const t=btnEl.textContent;
-        btnEl.classList.remove('bg-green-50','border-green-300','text-green-700','bg-red-50','border-red-300','text-red-700');
-        if(t===correctMeaning){
-          btnEl.classList.add('bg-green-50','border-green-300','text-green-700')
-        } else if(t===choice){
-          btnEl.classList.add('bg-red-50','border-red-300','text-red-700')
-        }
-      })
-      nextBtn.disabled=false; nextBtn.classList.remove('opacity-60','cursor-not-allowed')
-    }
+    grid.innerHTML='';
+    options.forEach(opt=>{
+      const b=btn(
+        'rounded-xl border px-5 py-4 md:py-5 text-left font-semibold transition hover:-translate-y-0.5 hover:shadow-md hover:bg-indigo-50 border-indigo-200',
+        opt,
+        ()=>choose(opt, correctMeaning)
+      );
+      grid.append(b);
+    });
 
-    function showDone(){ overlay.classList.remove('hidden'); }
+    nextBtn.disabled=true; 
+    nextBtn.classList.add('opacity-60','cursor-not-allowed');
   }
+
+  function choose(choice, correctMeaning){
+    if(correct!==null) return; // 이미 선택했으면 무시
+    const ok = (choice===correctMeaning);
+    correct=ok;
+    if(ok){ chime(); score++; } // ← 정답 시 점수 증가
+
+    Array.from(grid.children).forEach(btnEl=>{
+      const t=btnEl.textContent;
+      btnEl.classList.remove('bg-green-50','border-green-300','text-green-700','bg-red-50','border-red-300','text-red-700');
+      if(t===correctMeaning){
+        btnEl.classList.add('bg-green-50','border-green-300','text-green-700')
+      } else if(t===choice){
+        btnEl.classList.add('bg-red-50','border-red-300','text-red-700')
+      }
+    });
+
+    nextBtn.disabled=false; 
+    nextBtn.classList.remove('opacity-60','cursor-not-allowed');
+  }
+
+  function showDone(){
+    overlay.querySelector('.result').textContent = `정답: ${score}/${questions.length}`; // ← 점수 표시
+    overlay.classList.remove('hidden'); // 가운데 정렬된 팝업
+  }
+}
 
   // ===== 짝 맞추기 =====
   function ScreenMatch(){
